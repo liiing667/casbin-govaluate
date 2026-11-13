@@ -36,6 +36,7 @@ type EvaluableExpression struct {
 	tokens           []ExpressionToken
 	evaluationStages *evaluationStage
 	inputExpression  string
+	budget           Budget
 }
 
 /*
@@ -75,7 +76,7 @@ func NewEvaluableExpressionFromTokens(tokens []ExpressionToken) (*EvaluableExpre
 		return nil, err
 	}
 
-	ret.evaluationStages, err = planStages(ret.tokens)
+	ret.evaluationStages, err = planStages(ret.tokens, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -90,14 +91,39 @@ Functions passed into this will be available to the expression.
 */
 func NewEvaluableExpressionWithFunctions(expression string, functions map[string]ExpressionFunction) (*EvaluableExpression, error) {
 
+	return NewEvaluableExpressionWithFunctionsAndBudget(expression, functions, Budget{})
+}
+
+/*
+Similar to [NewEvaluableExpression], except that the given [budget] limits the resources
+that may be consumed while parsing this expression and while evaluating it.
+Intended for expressions built from untrusted input. Exceeding the budget returns an
+ordinary error (see ErrTokenBudgetExceeded, ErrDepthBudgetExceeded, ErrTimeoutBudgetExceeded).
+*/
+func NewEvaluableExpressionWithBudget(expression string, budget Budget) (*EvaluableExpression, error) {
+
+	functions := make(map[string]ExpressionFunction)
+	return NewEvaluableExpressionWithFunctionsAndBudget(expression, functions, budget)
+}
+
+/*
+Similar to [NewEvaluableExpressionWithFunctions], except that the given [budget] limits the
+resources that may be consumed while parsing this expression and while evaluating it.
+Intended for expressions built from untrusted input.
+*/
+func NewEvaluableExpressionWithFunctionsAndBudget(expression string, functions map[string]ExpressionFunction, budget Budget) (*EvaluableExpression, error) {
+
 	var ret *EvaluableExpression
 	var err error
 
 	ret = new(EvaluableExpression)
 	ret.QueryDateFormat = isoDateFormat
 	ret.inputExpression = expression
+	ret.budget = budget
 
-	ret.tokens, err = parseTokens(expression, functions)
+	tracker := newBudgetTracker(budget)
+
+	ret.tokens, err = parseTokens(expression, functions, tracker)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +143,7 @@ func NewEvaluableExpressionWithFunctions(expression string, functions map[string
 		return nil, err
 	}
 
-	ret.evaluationStages, err = planStages(ret.tokens)
+	ret.evaluationStages, err = planStages(ret.tokens, tracker)
 	if err != nil {
 		return nil, err
 	}
@@ -171,20 +197,36 @@ func (e EvaluableExpression) Eval(parameters Parameters) (interface{}, error) {
 		parameters = DUMMY_PARAMETERS
 	}
 
-	ret, err := e.evaluateStage(e.evaluationStages, parameters)
+	ret, err := e.evaluateStage(e.evaluationStages, parameters, newBudgetTracker(e.budget))
 	if free {
 		sanitizedParamsPool.Put(parameters)
 	}
 	return ret, err
 }
 
-func (e EvaluableExpression) evaluateStage(stage *evaluationStage, parameters Parameters) (interface{}, error) {
+/*
+Evaluates one stage of the expression, enforcing the per-call budget (if any) on each
+descent into a sub-stage. The budget tracker is created fresh by each Eval call, so
+concurrent evaluations of the same expression never share budget state.
+*/
+func (e EvaluableExpression) evaluateStage(stage *evaluationStage, parameters Parameters, budget *budgetTracker) (interface{}, error) {
+
+	if err := budget.enter(); err != nil {
+		return nil, err
+	}
+
+	ret, err := e.evaluateStageInner(stage, parameters, budget)
+	budget.exit()
+	return ret, err
+}
+
+func (e EvaluableExpression) evaluateStageInner(stage *evaluationStage, parameters Parameters, budget *budgetTracker) (interface{}, error) {
 
 	var left, right interface{}
 	var err error
 
 	if stage.leftStage != nil {
-		left, err = e.evaluateStage(stage.leftStage, parameters)
+		left, err = e.evaluateStage(stage.leftStage, parameters, budget)
 		if err != nil {
 			return nil, err
 		}
@@ -217,7 +259,7 @@ func (e EvaluableExpression) evaluateStage(stage *evaluationStage, parameters Pa
 	}
 
 	if right != shortCircuitHolder && stage.rightStage != nil {
-		right, err = e.evaluateStage(stage.rightStage, parameters)
+		right, err = e.evaluateStage(stage.rightStage, parameters, budget)
 		if err != nil {
 			return nil, err
 		}

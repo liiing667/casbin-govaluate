@@ -143,6 +143,20 @@ All `int` and `float` values of any width will be converted to `float64` before 
 
 At no point is the parameter structure, or any value thereof, modified by this library.
 
+# Resource budgets
+
+If expressions come from untrusted input, malformed expressions with extreme nesting or very long operator chains can consume unbounded stack and memory while tokenizing, planning, or evaluating. To guard against this, create the expression with `govaluate.NewEvaluableExpressionWithBudget` (or `govaluate.NewEvaluableExpressionWithFunctionsAndBudget`) and pass a `govaluate.Budget`:
+
+```go
+expr, err := govaluate.NewEvaluableExpressionWithBudget(expression, govaluate.Budget{
+	MaxTokens: 1000,            // maximum number of tokens in the expression
+	MaxDepth:  100,             // maximum nesting depth (parens, function args, operator chains)
+	Timeout:   50 * time.Millisecond, // wall-clock limit per parse and per evaluation
+})
+```
+
+The budget applies both while parsing and on every call to `Eval`/`Evaluate`. Exceeding any limit returns an ordinary error matching `govaluate.ErrTokenBudgetExceeded`, `govaluate.ErrDepthBudgetExceeded`, or `govaluate.ErrTimeoutBudgetExceeded` (testable with `errors.Is`) - the library never panics on over-budget input. Short-circuit semantics and the results of in-budget expressions are unchanged, and each parse or evaluation call tracks its own budget state, so concurrent calls are fully isolated. The zero `Budget` imposes no limits and behaves exactly as before.
+
 ## Alternates to maps
 
 The default form of parameters as a map may not serve your use case. You may have parameters in some other structure, you may want to change the no-parameter-found behavior, or maybe even just have some debugging print statements invoked when a parameter is accessed.

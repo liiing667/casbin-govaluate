@@ -19,7 +19,7 @@ var (
 	samples       = make([]int, 0, 10)
 )
 
-func parseTokens(expression string, functions map[string]ExpressionFunction) ([]ExpressionToken, error) {
+func parseTokens(expression string, functions map[string]ExpressionFunction, budget *budgetTracker) ([]ExpressionToken, error) {
 	samplesMu.Lock()
 	ret := make([]ExpressionToken, 0, averageTokens)
 	samplesMu.Unlock()
@@ -51,6 +51,10 @@ func parseTokens(expression string, functions map[string]ExpressionFunction) ([]
 
 		// append this valid token
 		ret = append(ret, token)
+
+		if err = budget.addToken(); err != nil {
+			return ret, err
+		}
 	}
 	stream.close()
 	samplesMu.Lock()

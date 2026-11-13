@@ -6,6 +6,7 @@ type tokenStream struct {
 	tokens      []ExpressionToken
 	index       int
 	tokenLength int
+	budget      *budgetTracker
 }
 
 var tokenStreamPool = sync.Pool{
@@ -19,7 +20,26 @@ func newTokenStream(tokens []ExpressionToken) *tokenStream {
 	ret.tokens = tokens
 	ret.index = 0
 	ret.tokenLength = len(tokens)
+	ret.budget = nil
 	return ret
+}
+
+/*
+enterDepth records descent into a nested grammatical construct (parenthesized clause,
+function arguments, or a chained operator) against the stream's budget, if any.
+*/
+func (t *tokenStream) enterDepth() error {
+
+	return t.budget.enter()
+}
+
+/*
+exitDepth records ascent from a nested grammatical construct.
+It must be paired with a successful call to enterDepth.
+*/
+func (t *tokenStream) exitDepth() {
+
+	t.budget.exit()
 }
 
 func (t *tokenStream) rewind() {

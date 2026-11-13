@@ -192,9 +192,10 @@ Creates a `evaluationStageList` object which represents an execution plan (or tr
 which is used to completely evaluate a set of tokens at evaluation-time.
 The three stages of evaluation can be thought of as parsing strings to tokens, then tokens to a stage list, then evaluation with parameters.
 */
-func planStages(tokens []ExpressionToken) (*evaluationStage, error) {
+func planStages(tokens []ExpressionToken, budget *budgetTracker) (*evaluationStage, error) {
 
 	stream := newTokenStream(tokens)
+	stream.budget = budget
 
 	stage, err := planTokens(stream)
 	if err != nil {
@@ -283,7 +284,12 @@ func planPrecedenceLevel(
 		}
 
 		if rightPrecedent != nil {
+			// chained operators recurse here; count the descent against the depth budget.
+			if err = stream.enterDepth(); err != nil {
+				return nil, err
+			}
 			rightStage, err = rightPrecedent(stream)
+			stream.exitDepth()
 			if err != nil {
 				return nil, err
 			}
@@ -365,7 +371,12 @@ func planAccessor(stream *tokenStream) (*evaluationStage, error) {
 
 			stream.rewind()
 
+			// function arguments recurse into a full sub-expression; count the depth.
+			if err = stream.enterDepth(); err != nil {
+				return nil, err
+			}
 			rightStage, err = planTokens(stream)
+			stream.exitDepth()
 			if err != nil {
 				return nil, err
 			}
@@ -409,7 +420,12 @@ func planValue(stream *tokenStream) (*evaluationStage, error) {
 			prev = stream.tokens[stream.index-2]
 		}
 
+		// parenthesized clauses recurse into a full sub-expression; count the depth.
+		if err = stream.enterDepth(); err != nil {
+			return nil, err
+		}
 		ret, err = planTokens(stream)
+		stream.exitDepth()
 		if err != nil {
 			return nil, err
 		}
